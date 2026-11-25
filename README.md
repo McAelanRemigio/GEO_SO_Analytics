@@ -10,7 +10,7 @@ Currently, I'm a **Data Assistant with the Global Education Office**, where I wo
 
 ---
 
-## 🚀 Projects
+## Projects
 
 A growing collection of projects involving data analytics, automation, reporting, visualization, and software development.
 
