@@ -1,3 +1,11 @@
+"""
+Study Abroad Analytics Engine
+
+Generic data management engine.
+
+Handles importing, inspecting, transforming, filtering,
+searching, sorting, grouping, and managing datasets.
+"""
 
 from pathlib import Path
 from time import perf_counter
@@ -10,7 +18,9 @@ class StudyAbroadDataEngine:
     def __init__(self, filepath=None, dataframe=None):
 
         if filepath is None and dataframe is None:
-            raise ValueError("Provide a filepath or dataframe.")
+            raise ValueError(
+                "Provide a filepath or dataframe."
+            )
 
         self.filepath = None
         self.original_data = None
@@ -20,6 +30,7 @@ class StudyAbroadDataEngine:
 
         if dataframe is not None:
             self.load_dataframe(dataframe)
+
         else:
             self.load_report(filepath)
 
@@ -29,23 +40,29 @@ class StudyAbroadDataEngine:
 
         filepath = Path(filepath)
 
-        if not filepath.exists():
+        if not filepath.is_file():
             raise FileNotFoundError(filepath)
 
         start = perf_counter()
 
-        if filepath.suffix.lower() == ".csv":
+        extension = filepath.suffix.lower()
+
+        if extension == ".csv":
             df = pd.read_csv(filepath)
 
-        elif filepath.suffix.lower() in [".xlsx", ".xls"]:
+        elif extension in [".xlsx", ".xls"]:
             df = pd.read_excel(filepath)
 
         else:
-            raise ValueError("Unsupported file format.")
+            raise ValueError(
+                "Unsupported file format. "
+                "Use CSV, XLSX, or XLS."
+            )
 
         elapsed = perf_counter() - start
 
         self.filepath = filepath
+
         self.load_dataframe(df)
 
         self.metrics["loading_seconds"] = elapsed
@@ -62,7 +79,9 @@ class StudyAbroadDataEngine:
     def load_dataframe(self, dataframe):
 
         if not isinstance(dataframe, pd.DataFrame):
-            raise TypeError("Expected a pandas DataFrame.")
+            raise TypeError(
+                "Expected a pandas DataFrame."
+            )
 
         self.original_data = dataframe.copy(deep=True)
         self.data = dataframe.copy(deep=True)
@@ -78,20 +97,35 @@ class StudyAbroadDataEngine:
 
         return {
             "records": len(self.data),
+
             "columns": list(self.data.columns),
-            "missing_values": self.data.isna().sum().to_dict(),
-            "duplicates": int(self.data.duplicated().sum()),
+
+            "missing_values": (
+                self.data.isna().sum().to_dict()
+            ),
+
+            "duplicates": int(
+                self.data.duplicated().sum()
+            ),
+
             "memory_mb": round(
-                self.data.memory_usage(deep=True).sum() / 1024**2, 3
+                self.data.memory_usage(deep=True).sum()
+                / 1024**2,
+                3
             )
         }
 
     def validate_columns(self, columns):
 
-        missing = [c for c in columns if c not in self.data.columns]
+        missing = [
+            col for col in columns
+            if col not in self.data.columns
+        ]
 
         if missing:
-            raise ValueError(f"Missing columns: {missing}")
+            raise ValueError(
+                f"Missing columns: {missing}"
+            )
 
         return True
 
@@ -108,17 +142,37 @@ class StudyAbroadDataEngine:
         start = perf_counter()
 
         if normalize_columns:
-            self.data.columns = [
-                str(c).strip().lower().replace(" ", "_")
-                for c in self.data.columns
+
+            normalized = [
+                str(col).strip().lower().replace(" ", "_")
+                for col in self.data.columns
             ]
 
+            if len(normalized) != len(set(normalized)):
+                raise ValueError(
+                    "Column normalization created duplicate "
+                    "column names. Check the original headers."
+                )
+
+            self.data.columns = normalized
+
+        # Validate requested conversion columns first
+        date_columns = convert_dates or []
+        numeric_columns = convert_numeric or []
+
+        self.validate_columns(
+            date_columns + numeric_columns
+        )
+
+        # Strip whitespace from text columns
         if strip_text:
+
             cols = self.data.select_dtypes(
                 include=["object", "string"]
             ).columns
 
             for col in cols:
+
                 self.data[col] = (
                     self.data[col]
                     .astype("string")
@@ -126,21 +180,28 @@ class StudyAbroadDataEngine:
                     .replace("", pd.NA)
                 )
 
-        for col in convert_dates or []:
-            self.validate_columns([col])
+        # Convert date columns
+        for col in date_columns:
+
             self.data[col] = pd.to_datetime(
-                self.data[col], errors="coerce"
+                self.data[col],
+                errors="coerce"
             )
 
-        for col in convert_numeric or []:
-            self.validate_columns([col])
+        # Convert numeric columns
+        for col in numeric_columns:
+
             self.data[col] = pd.to_numeric(
-                self.data[col], errors="coerce"
+                self.data[col],
+                errors="coerce"
             )
 
         elapsed = perf_counter() - start
 
-        self.metrics["transformation_seconds"] = elapsed
+        self.metrics["transformation_seconds"] = (
+            self.metrics.get("transformation_seconds", 0)
+            + elapsed
+        )
 
         self.history.append({
             "operation": "transform",
@@ -162,33 +223,92 @@ class StudyAbroadDataEngine:
 
             series = self.data[col]
 
-            if isinstance(value, dict):
+            # Handle missing values
+            if value is None:
+                mask = series.isna()
+
+            elif isinstance(value, dict):
 
                 if "isnull" in value:
-                    mask = series.isna() if value["isnull"] else series.notna()
+
+                    if set(value) != {"isnull"}:
+                        raise ValueError(
+                            "Use isnull separately from "
+                            "numeric filter conditions."
+                        )
+
+                    if not isinstance(value["isnull"], bool):
+                        raise ValueError(
+                            "isnull must be True or False."
+                        )
+
+                    mask = (
+                        series.isna()
+                        if value["isnull"]
+                        else series.notna()
+                    )
 
                 else:
-                    numeric = pd.to_numeric(series, errors="coerce")
-                    mask = pd.Series(True, index=self.data.index)
 
-                    if "min" in value:
-                        mask &= numeric >= value["min"]
+                    if not value or not set(value).issubset(
+                        {"min", "max"}
+                    ):
+                        raise ValueError(
+                            "Numeric filters must use "
+                            "'min' and/or 'max'."
+                        )
 
-                    if "max" in value:
-                        mask &= numeric <= value["max"]
+                    numeric = pd.to_numeric(
+                        series,
+                        errors="coerce"
+                    )
 
-                self.data = self.data[mask]
+                    mask = pd.Series(
+                        True,
+                        index=self.data.index
+                    )
 
+                    for bound in ["min", "max"]:
+
+                        if bound not in value:
+                            continue
+
+                        limit = pd.to_numeric(
+                            value[bound],
+                            errors="coerce"
+                        )
+
+                        if pd.isna(limit):
+                            raise ValueError(
+                                f"Invalid numeric {bound} "
+                                f"value for column '{col}'."
+                            )
+
+                        if bound == "min":
+                            mask &= numeric >= limit
+
+                        else:
+                            mask &= numeric <= limit
+
+                    mask = mask.fillna(False)
+
+            # Handle multiple possible values
             elif isinstance(value, (list, tuple, set)):
-                self.data = self.data[self.data[col].isin(value)]
 
+                mask = series.isin(value)
+
+            # Handle exact matches
             else:
-                self.data = self.data[self.data[col] == value]
+
+                mask = series == value
+
+            self.data = self.data.loc[mask].copy()
 
         elapsed = perf_counter() - start
 
         self.metrics["filtering_seconds"] = (
-            self.metrics.get("filtering_seconds", 0) + elapsed
+            self.metrics.get("filtering_seconds", 0)
+            + elapsed
         )
 
         self.history.append({
@@ -200,20 +320,31 @@ class StudyAbroadDataEngine:
 
         return self
 
-    def search(self, column, keyword, case_sensitive=False):
+    # 5. Data Search
+
+    def search(
+        self,
+        column,
+        keyword,
+        case_sensitive=False
+    ):
 
         self.validate_columns([column])
 
         start = perf_counter()
 
-        mask = self.data[column].astype("string").str.contains(
-            str(keyword),
-            case=case_sensitive,
-            na=False,
-            regex=False
+        mask = (
+            self.data[column]
+            .astype("string")
+            .str.contains(
+                str(keyword),
+                case=case_sensitive,
+                na=False,
+                regex=False
+            )
         )
 
-        self.data = self.data[mask]
+        self.data = self.data.loc[mask].copy()
 
         elapsed = perf_counter() - start
 
@@ -227,11 +358,20 @@ class StudyAbroadDataEngine:
 
         return self
 
-    # 5. Data Sorting
+    # 6. Data Sorting
 
-    def sort(self, by, ascending=True, inplace=True):
+    def sort(
+        self,
+        by,
+        ascending=True,
+        inplace=True
+    ):
 
-        columns = [by] if isinstance(by, str) else list(by)
+        columns = (
+            [by]
+            if isinstance(by, str)
+            else list(by)
+        )
 
         self.validate_columns(columns)
 
@@ -246,7 +386,8 @@ class StudyAbroadDataEngine:
         elapsed = perf_counter() - start
 
         self.metrics["sorting_seconds"] = (
-            self.metrics.get("sorting_seconds", 0) + elapsed
+            self.metrics.get("sorting_seconds", 0)
+            + elapsed
         )
 
         self.history.append({
@@ -256,44 +397,60 @@ class StudyAbroadDataEngine:
         })
 
         if inplace:
-            self.data = result
+
+            self.data = result.copy()
+
             return self
 
         return result.copy()
 
-    # 6. Grouping and Aggregating
+    # 7. Grouping & Aggregation
 
-    def group_by(self, columns, aggregations=None):
+    def group_by(
+        self,
+        columns,
+        aggregations=None
+    ):
 
-        columns = [columns] if isinstance(columns, str) else list(columns)
+        columns = (
+            [columns]
+            if isinstance(columns, str)
+            else list(columns)
+        )
 
         self.validate_columns(columns)
 
         if aggregations is None:
 
-            aggregations = {}
-
-            defaults = {
-                "applications": ("application_id", "nunique"),
-                "unique_students": ("user_id", "nunique"),
-                "distinct_programs": ("program_id", "nunique")
+            aggregations = {
+                "records": (columns[0], "size")
             }
 
-            for name, (col, operation) in defaults.items():
-                if col in self.data.columns:
-                    aggregations[name] = (col, operation)
+        for name, specification in aggregations.items():
 
-            if not aggregations:
-                aggregations["records"] = (self.data.columns[0], "size")
+            if (
+                not isinstance(specification, (tuple, list))
+                or len(specification) != 2
+            ):
+                raise ValueError(
+                    "Each aggregation must contain "
+                    "(column, operation)."
+                )
+
+            self.validate_columns([specification[0]])
 
         start = perf_counter()
 
         result = (
             self.data
-            .groupby(columns, dropna=False)
+            .groupby(
+                columns,
+                dropna=False
+            )
             .agg(**{
                 name: (col, operation)
-                for name, (col, operation) in aggregations.items()
+                for name, (col, operation)
+                in aggregations.items()
             })
             .reset_index()
         )
@@ -301,7 +458,8 @@ class StudyAbroadDataEngine:
         elapsed = perf_counter() - start
 
         self.metrics["grouping_seconds"] = (
-            self.metrics.get("grouping_seconds", 0) + elapsed
+            self.metrics.get("grouping_seconds", 0)
+            + elapsed
         )
 
         self.history.append({
@@ -312,7 +470,7 @@ class StudyAbroadDataEngine:
 
         return result
 
-    # 7. Data Management
+    # 8. Data Management
 
     def reset(self):
 
@@ -326,18 +484,23 @@ class StudyAbroadDataEngine:
         return self
 
     def get_data(self):
+
         return self.data.copy(deep=True)
 
     def get_original_data(self):
+
         return self.original_data.copy(deep=True)
 
-    # 8. Metrics and History
+    # 9. Metrics & History
 
     def get_metrics(self):
+
         return self.metrics.copy()
 
     def get_history(self):
+
         return pd.DataFrame(self.history)
 
     def get_record_count(self):
+
         return len(self.data)
